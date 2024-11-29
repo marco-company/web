@@ -2,12 +2,12 @@
 /* Copyright 2023 Onestein - Anjeel Haria
  * License LGPL-3.0 or later (http://www.gnu.org/licenses/lgpl). */
 import AbstractController from "web.AbstractController";
-import {FormViewDialog} from "@web/views/view_dialogs/form_view_dialog";
-import time from "web.time";
-import core from "web.core";
-import Dialog from "web.Dialog";
-var _t = core._t;
 import {Component} from "@odoo/owl";
+import Dialog from "web.Dialog";
+import {FormViewDialog} from "@web/views/view_dialogs/form_view_dialog";
+import core from "web.core";
+import time from "web.time";
+var _t = core._t;
 
 export default AbstractController.extend({
     custom_events: _.extend({}, AbstractController.prototype.custom_events, {
@@ -55,11 +55,29 @@ export default AbstractController.extend({
         const group_bys = params.groupBy || this.renderer.last_group_bys || [];
         this.last_domains = domains;
         this.last_contexts = contexts;
+
+        const cleanGroupBys = (groupBys) => {
+            return groupBys.map((group) => {
+                if (group.includes(":")) {
+                    return group.split(":")[0];
+                }
+                return group;
+            });
+        };
+
         // Select the group by
         let n_group_bys = group_bys;
-        if (!n_group_bys.length && this.renderer.arch.attrs.default_group_by) {
-            n_group_bys = this.renderer.arch.attrs.default_group_by.split(",");
+        let arch_attrs_default_group_by = this.renderer.arch.attrs.default_group_by
+            ? this.renderer.arch.attrs.default_group_by.split(",")
+            : [];
+        arch_attrs_default_group_by = cleanGroupBys(arch_attrs_default_group_by);
+
+        if (!n_group_bys.length && arch_attrs_default_group_by.length) {
+            n_group_bys = arch_attrs_default_group_by;
+        } else {
+            n_group_bys = cleanGroupBys(n_group_bys);
         }
+
         this.renderer.last_group_bys = n_group_bys;
         this.renderer.last_domains = domains;
 
@@ -73,7 +91,9 @@ export default AbstractController.extend({
                 kwargs: {
                     fields: fields,
                     domain: domains,
-                    order: [{name: this.renderer.arch.attrs.default_group_by}],
+                    order: arch_attrs_default_group_by.map((group) => {
+                        return {name: group};
+                    }),
                 },
                 context: this.getSession().user_context,
             }).then((data) =>
@@ -92,11 +112,15 @@ export default AbstractController.extend({
      * @returns {jQuery.Deferred}
      */
     _onGroupClick: function (event) {
-        const groupField = this.renderer.last_group_bys[0];
+        const groups = event.data.item.group.split("/");
+        const [group_key, group_value] = groups[groups.length - 1].split("-");
+        if (!group_value || group_value === "false") return;
+        const group_model = this.renderer.fieldsGet[group_key].relation;
+        if (!group_model) return;
         return this.do_action({
             type: "ir.actions.act_window",
-            res_model: this.renderer.fields[groupField].relation,
-            res_id: event.data.item.group,
+            res_model: group_model,
+            res_id: parseInt(group_value, 10),
             target: "new",
             views: [[false, "form"]],
         });
@@ -110,7 +134,8 @@ export default AbstractController.extend({
      * @returns {jQuery.Deferred}
      */
     _onItemDoubleClick: function (event) {
-        return this.openItem(event.data.item, false);
+        const item_id = event.data.item.split("_")[0];
+        return this.openItem(Number(item_id) || item_id, false);
     },
 
     /**
@@ -119,6 +144,7 @@ export default AbstractController.extend({
      *
      * @private
      * @param {EventObject} event
+     * @returns {jQuery.Deferred}
      */
     _onUpdate: function (event) {
         const item = event.data.item;
@@ -126,7 +152,11 @@ export default AbstractController.extend({
         return this.openItem(item_id, true);
     },
 
-    /** Open specified item, either through modal, or by navigating to form view. */
+    /** Open specified item, either through modal, or by navigating to form view.
+     * @param {Number} item_id
+     * @param {Boolean} is_editable
+     * @returns {void}
+     */
     openItem: function (item_id, is_editable) {
         if (this.open_popup_action) {
             const options = {
@@ -166,11 +196,7 @@ export default AbstractController.extend({
         const fields = this.renderer.fields;
         const event_start = item.start;
         const event_end = item.end;
-        let group = false;
-        if (item.group !== -1) {
-            group = item.group;
-        }
-        const data = {};
+        let data = {};
         // In case of a move event, the date_delay stay the same,
         // only date_start and stop must be updated
         data[this.date_start] = time.auto_date_to_str(
@@ -194,29 +220,25 @@ export default AbstractController.extend({
             );
             data[this.date_delay] = diff_seconds / 3600;
         }
-        const grouped_field = this.renderer.last_group_bys[0];
-        this._rpc({
-            model: this.modelName,
-            method: "fields_get",
-            args: [grouped_field],
-            context: this.getSession().user_context,
-        }).then(async (fields_processed) => {
-            if (
-                this.renderer.last_group_bys &&
-                this.renderer.last_group_bys instanceof Array &&
-                fields_processed[grouped_field].type !== "many2many"
-            ) {
-                data[this.renderer.last_group_bys[0]] = group;
+
+        const group_record_values = this.renderer.groups.reduce((acc, group) => {
+            if (group.id === item.group) {
+                return group.group_record_values;
             }
+            return acc;
+        }, {});
+        data = {
+            ...data,
+            ...group_record_values,
+        };
 
-            this.moveQueue.push({
-                id: event.data.item.id,
-                data: data,
-                event: event,
-            });
-
-            this.debouncedInternalMove();
+        this.moveQueue.push({
+            id: event.data.item.id,
+            data: data,
+            event: event,
         });
+
+        this.debouncedInternalMove();
     },
 
     /**
@@ -235,7 +257,7 @@ export default AbstractController.extend({
                 this._rpc({
                     model: this.model.modelName,
                     method: "write",
-                    args: [[item.event.data.item.id], item.data],
+                    args: [[item.event.data.item.record_id], item.data],
                     context: this.getSession().user_context,
                 }).then(() => {
                     item.event.data.callback(item.event.data.item);
@@ -300,9 +322,13 @@ export default AbstractController.extend({
             default_context["default_".concat(this.date_delay)] =
                 (moment(item.end) - moment(item.start)) / 3600000;
         }
-        if (item.group > 0) {
-            default_context["default_".concat(this.renderer.last_group_bys[0])] =
-                item.group;
+        if (item.group) {
+            const groups = item.group.split("/");
+            for (let i = 0; i < groups.length; i++) {
+                const [group_key, group_value] = groups[i].split("-");
+                default_context["default_".concat(group_key)] =
+                    Number(group_value) || group_value;
+            }
         }
         // Show popup
         this.Dialog = Component.env.services.dialog.add(
@@ -360,12 +386,12 @@ export default AbstractController.extend({
         return this._rpc({
             model: this.modelName,
             method: "unlink",
-            args: [[event.data.item.id]],
+            args: [[event.data.item.record_id]],
             context: this.getSession().user_context,
         }).then(() => {
             let unlink_index = false;
             for (var i = 0; i < this.model.data.data.length; i++) {
-                if (this.model.data.data[i].id === event.data.item.id) {
+                if (this.model.data.data[i].id === event.data.item.record_id) {
                     unlink_index = i;
                 }
             }

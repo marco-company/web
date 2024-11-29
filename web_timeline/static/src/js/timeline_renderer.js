@@ -224,7 +224,7 @@ odoo.define("web_timeline.TimelineRenderer", function (require) {
             }
 
             this.timeline = new vis.Timeline(this.$timeline.get(0), {}, this.options);
-            this.timeline.on("click", this.on_timeline_click);
+            this.timeline.on("doubleClick", this.on_timeline_click);
             if (!this.options.onUpdate) {
                 // In read-only mode, catch double-clicks this way.
                 this.timeline.on("doubleClick", this.on_timeline_double_click);
@@ -267,13 +267,15 @@ odoo.define("web_timeline.TimelineRenderer", function (require) {
             const keys = Object.keys(items);
             for (const key of keys) {
                 const item = items[key];
-                const data = datas.get(Number(key));
+                const data = datas.get(key);
                 if (!data || !data.evt) {
                     return;
                 }
                 for (const id of data.evt[this.dependency_arrow]) {
-                    if (keys.indexOf(id.toString()) !== -1) {
-                        this.draw_dependency(item, items[id]);
+                    for (const k of keys) {
+                        if (k.split("_")[0].toString() === id.toString()) {
+                            this.draw_dependency(item, items[k]);
+                        }
                     }
                 }
             }
@@ -331,7 +333,7 @@ odoo.define("web_timeline.TimelineRenderer", function (require) {
                 method: "name_get",
                 args: [ids],
                 context: this.getSession().user_context,
-            }).then((names) => {
+            }).then(async (names) => {
                 const nevents = _.map(events, (event) =>
                     _.extend(
                         {
@@ -340,6 +342,7 @@ odoo.define("web_timeline.TimelineRenderer", function (require) {
                         event
                     )
                 );
+                this.fieldsGet = await this.get_fields_get(group_bys);
                 return this.on_data_loaded_2(nevents, group_bys, adjust_window);
             });
         },
@@ -357,10 +360,36 @@ odoo.define("web_timeline.TimelineRenderer", function (require) {
             this.grouped_by = group_bys;
             for (const evt of events) {
                 if (evt[this.date_start]) {
-                    data.push(this.event_data_transform(evt));
+                    var transformed = this.event_data_transform(evt);
+                    if (Array.isArray(transformed)) {
+                        data.push(...transformed);
+                    } else {
+                        data.push(transformed);
+                    }
                 }
             }
             this.split_groups(events, group_bys).then((groups) => {
+                this.groups = groups;
+                for (const d of data) {
+                    // Check if the group should be visible
+                    // If d.group is 'partner_id-35/category_id-4/city_id-false'
+                    // it means there are 3 groups to check
+                    // partner_id-35, partner_id-35/category_id-4, partner_id-35/category_id-4/city_id-false
+                    const groupParts = d.group.split("/");
+                    let groupPath = "";
+                    const groupsToCheck = groupParts.map((part, index) => {
+                        groupPath = index === 0 ? part : `${groupPath}/${part}`;
+                        return groupPath;
+                    });
+                    for (const gtc of groupsToCheck) {
+                        if (gtc.endsWith("-false")) {
+                            const group = groups.find((g) => g.id === gtc);
+                            if (group) {
+                                group.visible = true;
+                            }
+                        }
+                    }
+                }
                 this.timeline.setGroups(groups);
                 this.timeline.setItems(data);
                 const mode = !this.mode || this.mode === "fit";
@@ -384,67 +413,130 @@ odoo.define("web_timeline.TimelineRenderer", function (require) {
                 return events;
             }
             const groups = [];
-            groups.push({id: -1, content: _t("<b>UNASSIGNED</b>"), order: -1});
-            var seq = 1;
-            for (const evt of events) {
-                const grouped_field = _.first(group_bys);
-                const group_name = evt[grouped_field];
-                if (group_name) {
-                    if (group_name instanceof Array) {
-                        const group = _.find(
-                            groups,
-                            (existing_group) => existing_group.id === group_name[0]
-                        );
-                        if (_.isUndefined(group)) {
-                            // Check if group is m2m in this case add id -> value of all
-                            // found entries.
-                            await this._rpc({
-                                model: this.modelName,
-                                method: "fields_get",
-                                args: [[grouped_field]],
-                                context: this.getSession().user_context,
-                            }).then(async (fields) => {
-                                if (fields[grouped_field].type === "many2many") {
-                                    const list_values =
-                                        await this.get_m2m_grouping_datas(
-                                            fields[grouped_field].relation,
-                                            group_name
-                                        );
-                                    for (const vals of list_values) {
-                                        let is_inside = false;
-                                        for (const gr of groups) {
-                                            if (vals.id === gr.id) {
-                                                is_inside = true;
-                                                break;
-                                            }
-                                        }
-                                        if (!is_inside) {
-                                            vals.order = seq;
-                                            seq += 1;
-                                            groups.push(vals);
-                                        }
-                                    }
-                                } else {
-                                    groups.push({
-                                        id: group_name[0],
-                                        content: group_name[1],
-                                        order: seq,
-                                    });
-                                    seq += 1;
-                                }
-                            });
+            let seq = 1;
+
+            const groupLevel = group_bys.reduce((acc, g, index) => {
+                acc[g] = index + 1;
+                return acc;
+            }, {});
+
+            const createGroup = (id, name, parents, lvl) => {
+                const parentGroups = parents.length ? parents : [null];
+                const createdGroups = [];
+                for (const parent of parentGroups) {
+                    const subGroupId = parent ? `${parent.id}/${id}` : id;
+                    let group = groups.find((g) => g.id === subGroupId);
+                    if (!group) {
+                        const group_record_values = {};
+                        const group_parts = subGroupId.split("/");
+                        for (let i = 0; i < group_parts.length; i++) {
+                            const [groupKey, groupValue] = group_parts[i].split("-");
+                            // Skip updating m2m field as it is complicated to handle drag and drop
+                            if (this.fieldsGet[groupKey].type === "many2many") {
+                                continue;
+                            }
+                            group_record_values[groupKey] =
+                                groupValue === "false"
+                                    ? false
+                                    : Number(groupValue) || groupValue;
+                        }
+                        group = {
+                            id: subGroupId,
+                            content: name || "UNASSIGNED",
+                            group_record_values,
+                            order: name === "UNASSIGNED" ? -1 : seq,
+                            treeLevel: lvl,
+                            visible: name !== "UNASSIGNED",
+                        };
+                        seq += 1;
+                        groups.push(group);
+                    }
+                    createdGroups.push(group);
+                    if (parent) {
+                        if (!parent.nestedGroups) {
+                            parent.nestedGroups = [];
+                        }
+                        if (!parent.nestedGroups.includes(group.id)) {
+                            parent.nestedGroups.push(group.id);
                         }
                     }
+                }
+                return createdGroups;
+            };
+
+            const processGroup = async (
+                grouped_field,
+                groupValue,
+                groupKey,
+                groupLvl,
+                parentGroups
+            ) => {
+                if (groupValue && Array.isArray(groupValue)) {
+                    if (this.fieldsGet[grouped_field].type === "many2many") {
+                        const groupModel = this.fieldsGet[grouped_field].relation;
+                        const listValues = await this.get_m2m_grouping_datas(
+                            groupModel,
+                            groupValue
+                        );
+                        const createdM2mGroups = [];
+                        for (const vals of listValues) {
+                            if (groupValue.includes(vals.id) || vals.id === false) {
+                                const newM2mGroups = createGroup(
+                                    `${groupKey}-${vals.id}`,
+                                    vals.content,
+                                    parentGroups,
+                                    groupLvl
+                                );
+                                createdM2mGroups.push(...newM2mGroups);
+                            }
+                        }
+                        return createdM2mGroups;
+                    }
+                    const groupId = `${groupKey}-${groupValue[0]}`;
+                    const groupName = groupValue[1];
+                    return createGroup(groupId, groupName, parentGroups, groupLvl);
+                } else if (
+                    groupValue &&
+                    ["string", "number"].includes(typeof groupValue)
+                ) {
+                    return createGroup(
+                        `${groupKey}-${groupValue}`,
+                        groupValue,
+                        parentGroups,
+                        groupLvl
+                    );
+                }
+                return createGroup(
+                    `${groupKey}-false`,
+                    "UNASSIGNED",
+                    parentGroups,
+                    groupLvl
+                );
+            };
+
+            for (const evt of events) {
+                let parentGroups = [null];
+                for (const grouped_field of group_bys) {
+                    const groupValue = evt[grouped_field];
+                    const groupKey = grouped_field;
+                    const groupLvl = groupLevel[grouped_field];
+                    parentGroups = await processGroup(
+                        grouped_field,
+                        groupValue,
+                        groupKey,
+                        groupLvl,
+                        parentGroups
+                    );
                 }
             }
             return groups;
         },
 
-        get_m2m_grouping_datas: async function (model, group_name) {
-            const groups = [];
-            for (const gr of group_name) {
+        get_m2m_grouping_datas: async function (groupModel, groupValue) {
+            const groups = [{id: false, content: "UNASSIGNED"}];
+            for (const gr of groupValue) {
                 await this._rpc({
-                    model: model,
+                    model: groupModel,
                     method: "name_get",
                     args: [gr],
                     context: this.getSession().user_context,
@@ -453,6 +545,15 @@ odoo.define("web_timeline.TimelineRenderer", function (require) {
                 });
             }
             return groups;
+        },
+
+        get_fields_get: async function (group_bys) {
+            return await this._rpc({
+                model: this.modelName,
+                method: "fields_get",
+                args: [group_bys],
+                context: this.getSession().user_context,
+            });
         },
 
         /**
@@ -506,12 +607,34 @@ odoo.define("web_timeline.TimelineRenderer", function (require) {
          */
         event_data_transform: function (evt) {
             const [date_start, date_stop] = this._get_event_dates(evt);
-            let group = evt[this.last_group_bys[0]];
-            if (group && group instanceof Array && group.length > 0) {
-                group = _.first(group);
-            } else {
-                group = -1;
+            const evtGroup = [];
+            let group = "undefined-false";
+            for (const grouped_field of this.last_group_bys) {
+                evtGroup.push({[grouped_field]: evt[grouped_field]});
             }
+
+            group = evtGroup
+                .reduce((acc, eG) => {
+                    const entries = Object.entries(eG).flatMap(([f, value]) => {
+                        if (value instanceof Array) {
+                            if (this.fieldsGet[f].type === "many2many") {
+                                return value.length === 0
+                                    ? [`${f}-false`]
+                                    : value.map((v) => `${f}-${v}`);
+                            }
+                            return [`${f}-${value[0]}`];
+                        } else if (["string", "number"].includes(typeof value)) {
+                            return [`${f}-${value}`];
+                        }
+                        return [`${f}-false`];
+                    });
+                    if (acc.length === 0) {
+                        return entries.map((e) => [e]);
+                    }
+                    return acc.flatMap((a) => entries.map((e) => [...a, e]));
+                }, [])
+                .map((g) => g.join("/"))
+                .join(",");
 
             for (const color of this.colors) {
                 if (py.eval(`'${evt[color.field]}' ${color.opt} '${color.value}'`)) {
@@ -524,22 +647,33 @@ odoo.define("web_timeline.TimelineRenderer", function (require) {
                 content = this.render_timeline_item(evt);
             }
 
-            const r = {
-                start: date_start,
-                content: content,
-                id: evt.id,
-                order: evt.order,
-                group: group,
-                evt: evt,
-                style: `background-color: ${this.color};`,
-            };
-            // Only specify range end when there actually is one.
-            // ➔ Instantaneous events / those with inverted dates are displayed as points.
-            if (date_stop && moment(date_start).isBefore(date_stop)) {
-                r.end = date_stop;
+            const groups = group.split(",");
+            const r_list = [];
+            for (const g of groups) {
+                const r = {
+                    start: date_start,
+                    content: content,
+                    // Append group to the id to avoid duplicate id, one item can be
+                    // appear/duplicated in multiple groups in case group by m2m field.
+                    id: evt.id + "_" + g,
+                    record_id: evt.id,
+                    order: evt.order,
+                    group: g,
+                    evt: evt,
+                    style: `background-color: ${this.color};`,
+                };
+                // Only specify range end when there actually is one.
+                // ➔ Instantaneous events / those with inverted dates are displayed as points.
+                if (date_stop && moment(date_start).isBefore(date_stop)) {
+                    r.end = date_stop;
+                }
+                this.color = null;
+                if (groups.length === 1) {
+                    return r;
+                }
+                r_list.push(r);
             }
-            this.color = null;
-            return r;
+            return r_list;
         },
 
         /**
@@ -587,6 +721,7 @@ odoo.define("web_timeline.TimelineRenderer", function (require) {
          * @private
          */
         on_timeline_double_click: function (e) {
+            this.on_timeline_click(e);
             if (e.what === "item" && e.item !== -1) {
                 this._trigger(
                     e.item,

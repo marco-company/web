@@ -53,13 +53,18 @@ odoo.define("web_timeline.TimelineModel", function (require) {
          * @returns {jQuery.Deferred}
          */
         _loadTimeline: function () {
+            const order = this.default_group_by.split(",").map((group) => {
+                // Handle the case where the group by is a field with a group operator
+                // e.g. date:month
+                return {name: group.includes(":") ? group.split(":")[0] : group};
+            });
             return this._rpc({
                 model: this.modelName,
                 method: "search_read",
                 kwargs: {
                     fields: this.fieldNames,
                     domain: this.data.domain,
-                    order: [{name: this.default_group_by}],
+                    order: order,
                     context: this.data.context,
                 },
             }).then((events) => {
