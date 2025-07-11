@@ -1,18 +1,24 @@
 .o_control_panel {
-    .breadcrumb {
+    .o_cp_top {
+        display: block;
+    }
+
+    .o_cp_top_left {
+        // Breadcrumb container
         width: 100%;
         margin-bottom: 5px;
     }
 
-    .o_cp_searchview {
+    .o_cp_top_right {
+        // Searchview container
         width: 100%;
     }
 
-    .o_cp_left {
+    .o_cp_bottom_left {
         width: 45%;
     }
 
-    .o_cp_right {
+    .o_cp_bottom_right {
         width: 55%;
     }
 }
