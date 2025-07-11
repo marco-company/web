@@ -1,11 +1,11 @@
 /* Copyright 2019 Onestein
  * License AGPL-3.0 or later (https://www.gnu.org/licenses/agpl). */
 
-odoo.define('web_group_by_percentage', function (require) {
+odoo.define("web_group_by_percentage", function (require) {
     "use strict";
 
-    var ListRenderer = require('web.ListRenderer'),
-        BasicModel = require('web.BasicModel');
+    var ListRenderer = require("web.ListRenderer"),
+        BasicModel = require("web.BasicModel");
 
     ListRenderer.include({
         /**
@@ -23,11 +23,11 @@ odoo.define('web_group_by_percentage', function (require) {
                     }
                 });
 
-                var $cell = $(res.find('td').get(cellIndex - 1));
-                var $b = $('<span>')
-                    .addClass('web_group_by_percentage')
-                    .html(_.str.sprintf('%s%% ', percentage.toFixed(2)))
-                    .data('percentage', percentage);
+                var $cell = $(res.find("td").get(cellIndex - 1));
+                var $b = $("<span>")
+                    .addClass("web_group_by_percentage")
+                    .html(_.str.sprintf("%s%% ", percentage.toFixed(2)))
+                    .data("percentage", percentage);
                 $cell.prepend($b);
             });
             return res;
@@ -50,7 +50,7 @@ odoo.define('web_group_by_percentage', function (require) {
             }
             return result;
         },
-        
+
         /**
          * Calculate percentages.
          *
@@ -79,7 +79,8 @@ odoo.define('web_group_by_percentage', function (require) {
                     _.each(_.keys(sums), function (field) {
                         var percentage = 0;
                         if (sums[field]) {
-                            percentage = (group.aggregateValues[field] / sums[field]) * 100;
+                            percentage =
+                                (group.aggregateValues[field] / sums[field]) * 100;
                         }
                         aggregatePercentages[field] = percentage;
                     });
