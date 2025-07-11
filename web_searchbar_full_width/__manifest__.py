@@ -4,18 +4,16 @@
 {
     "name": "Full width searchbar",
     "version": "12.0.1.0.1",
-    "author": "Therp BV, "
-              "Odoo Community Association (OCA), "
-              "Siddharth Bhalgami",
-    'website': "https://github.com/OCA/web",
+    "author": "Therp BV, Odoo Community Association (OCA), Siddharth Bhalgami",
+    "website": "https://github.com/OCA/web",
     "license": "AGPL-3",
     "category": "Tools",
     "summary": "Show search bar in full screen width",
     "depends": [
-        'web',
+        "web",
     ],
     "data": [
-        'views/templates.xml',
+        "views/templates.xml",
     ],
-    'installable': True,
+    "installable": True,
 }
