@@ -12,8 +12,10 @@
     "depends": [
         "web",
     ],
-    "data": [
-        "views/templates.xml",
-    ],
+    "assets": {
+        "web.assets_backend": [
+            "/web_searchbar_full_width/static/src/scss/web_searchbar_full_width.scss",
+        ]
+    },
     "installable": True,
 }
