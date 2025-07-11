@@ -10,6 +10,11 @@
     "depends": [
         "web",
     ],
-    "data": ["templates/assets.xml"],
+    "assets": {
+        "web.assets_backend": [
+            "/web_group_by_percentage/static/src/js/backend.js",
+            "/web_group_by_percentage/static/src/scss/backend.scss",
+        ],
+    },
     "installable": True,
 }
