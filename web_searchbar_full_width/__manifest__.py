@@ -3,7 +3,7 @@
 
 {
     "name": "Full width searchbar",
-    "version": "12.0.1.0.1",
+    "version": "16.0.1.0.0",
     "author": "Therp BV, Odoo Community Association (OCA), Siddharth Bhalgami",
     "website": "https://github.com/OCA/web",
     "license": "AGPL-3",
