@@ -43,4 +43,19 @@ patch(ListRenderer.prototype, "list_group_by_percentage", {
 
         return formatPercentage(aggregateValue / totalSum);
     },
+
+    freezeColumnWidths() {
+        /**
+         * @override
+         *
+         * Having a fixed table layout can lead to text overflow values with the added percentages
+         * if the aggregate values are high enough.
+         * As such, we restore the table layout CSS value to 'auto' to reduce text overflow.
+         */
+        this._super(...arguments);
+
+        if (this.props.list.isGrouped) {
+            this.tableRef.el.style.tableLayout = "auto";
+        }
+    },
 });
