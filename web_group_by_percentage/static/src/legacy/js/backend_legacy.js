@@ -1,7 +1,11 @@
 /* Copyright 2019 Onestein
  * License AGPL-3.0 or later (https://www.gnu.org/licenses/agpl). */
 
-odoo.define("web_group_by_percentage", function (require) {
+odoo.define("web_group_by_percentage.backend_legacy", function (require) {
+    /*
+        This module is meant to be applied for the ListRenderer object, extending BasicRenderer.
+        (For tables having the `o_legacy_form_view` CSS class)
+    */
     "use strict";
 
     var ListRenderer = require("web.ListRenderer"),

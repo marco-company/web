@@ -12,7 +12,7 @@
     ],
     "assets": {
         "web.assets_backend": [
-            "/web_group_by_percentage/static/src/js/backend.js",
+            "/web_group_by_percentage/static/src/legacy/js/backend_legacy.js",
             "/web_group_by_percentage/static/src/js/backend.esm.js",
             "/web_group_by_percentage/static/src/xml/list_grouprow_percentage.xml",
             "/web_group_by_percentage/static/src/scss/backend.scss",
