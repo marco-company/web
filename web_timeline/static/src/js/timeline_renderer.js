@@ -342,7 +342,6 @@ odoo.define("web_timeline.TimelineRenderer", function (require) {
                         event
                     )
                 );
-                this.fieldsGet = await this.get_fields_get(group_bys);
                 return this.on_data_loaded_2(nevents, group_bys, adjust_window);
             });
         },
@@ -369,25 +368,36 @@ odoo.define("web_timeline.TimelineRenderer", function (require) {
                 }
             }
             this.split_groups(events, group_bys).then((groups) => {
+                // This.groups contains all unique group objects
                 this.groups = groups;
+                // Ensure relevant groups are visible
                 for (const d of data) {
-                    // Check if the group should be visible
-                    // If d.group is 'partner_id-35/category_id-4/city_id-false'
-                    // it means there are 3 groups to check
-                    // partner_id-35, partner_id-35/category_id-4, partner_id-35/category_id-4/city_id-false
-                    const groupParts = d.group.split("/");
-                    let groupPath = "";
-                    const groupsToCheck = groupParts.map((part, index) => {
-                        groupPath = index === 0 ? part : `${groupPath}/${part}`;
-                        return groupPath;
-                    });
-                    for (const gtc of groupsToCheck) {
-                        if (gtc.endsWith("-false")) {
-                            const group = groups.find((g) => g.id === gtc);
-                            if (group) {
+                    // D is a vis.js item, d.group is a single JSON string path
+                    const itemGroupPathJson = d.group;
+                    try {
+                        // Parse the item's full group path
+                        const itemPathSegments = JSON.parse(itemGroupPathJson);
+
+                        // Iterate through all prefixes of this item's group path (e.g., [seg1], [seg1, seg2], ...)
+                        for (let i = 0; i < itemPathSegments.length; i++) {
+                            const subPathJson = JSON.stringify(
+                                itemPathSegments.slice(0, i + 1)
+                            );
+                            // Find the actual group object corresponding to this sub-path
+                            const group = groups.find((g) => g.id === subPathJson);
+                            if (group && !group.visible) {
+                                // If a group in the item's hierarchy was initially not visible (e.g., an "UNASSIGNED" group),
+                                // make it visible because an item actually belongs to this path.
                                 group.visible = true;
                             }
                         }
+                    } catch (e) {
+                        console.error(
+                            "Error processing group visibility for item. Group JSON string was:",
+                            itemGroupPathJson,
+                            "Error:",
+                            e
+                        );
                     }
                 }
                 this.timeline.setGroups(groups);
@@ -410,7 +420,13 @@ odoo.define("web_timeline.TimelineRenderer", function (require) {
          */
         split_groups: async function (events, group_bys) {
             if (group_bys.length === 0) {
-                return events;
+                // No grouping, but vis.js expects groups if items have a 'group' property.
+                // Create a single default group if items might have group properties.
+                // However, event_data_transform might assign 'undefined-false' if no groups.
+                // For safety, ensure at least one group if group_bys is empty but items might specify groups.
+                // This case should ideally be handled by ensuring items don't have group props if no group_bys.
+                // For now, returning an empty array, assuming items won't have group property.
+                return [];
             }
             const groups = [];
             let seq = 1;
@@ -420,39 +436,88 @@ odoo.define("web_timeline.TimelineRenderer", function (require) {
                 return acc;
             }, {});
 
-            const createGroup = (id, name, parents, lvl) => {
-                const parentGroups = parents.length ? parents : [null];
+            // Memoization for M2M name_get calls
+            const m2mNameCache = {};
+            const getM2MNames = async (model, ids) => {
+                const cacheKey = `${model}-${ids.sort().join(",")}`;
+                if (m2mNameCache[cacheKey]) {
+                    return m2mNameCache[cacheKey];
+                }
+                const names = await this._rpc({
+                    model: model,
+                    method: "name_get",
+                    args: [ids],
+                    context: this.getSession().user_context,
+                });
+                const result = names.map((name) => ({id: name[0], content: name[1]}));
+                m2mNameCache[cacheKey] = result;
+                return result;
+            };
+
+            const createGroup = (
+                segmentObject,
+                displayName,
+                parentGroupsInput,
+                lvl
+            ) => {
+                // SegmentObject is like {field: "partner_id", value: 35}
+                // displayName is the human-readable name for this segment, e.g., "Azure Interior"
+                const parentGroups =
+                    parentGroupsInput && parentGroupsInput.length
+                        ? parentGroupsInput
+                        : [null];
                 const createdGroups = [];
+
                 for (const parent of parentGroups) {
-                    const subGroupId = parent ? `${parent.id}/${id}` : id;
-                    let group = groups.find((g) => g.id === subGroupId);
+                    let newPathSegments = [];
+                    if (parent && parent.id) {
+                        // Parent is a group object, parent.id is JSON string
+                        try {
+                            const parentPathSegments = JSON.parse(parent.id);
+                            newPathSegments = [...parentPathSegments, segmentObject];
+                        } catch (e) {
+                            console.error(
+                                "Error parsing parent group ID:",
+                                parent.id,
+                                e
+                            );
+                            // Fallback
+                            newPathSegments = [segmentObject];
+                        }
+                    } else {
+                        newPathSegments = [segmentObject];
+                    }
+                    const subGroupId = JSON.stringify(newPathSegments);
+
+                    let group = groups && groups.find((g) => g.id === subGroupId);
                     if (!group) {
                         const group_record_values = {};
-                        const group_parts = subGroupId.split("/");
-                        for (let i = 0; i < group_parts.length; i++) {
-                            const [groupKey, groupValue] = group_parts[i].split("-");
-                            // Skip updating m2m field as it is complicated to handle drag and drop
-                            if (this.fieldsGet[groupKey].type === "many2many") {
-                                continue;
+                        newPathSegments.forEach((segment) => {
+                            // Do not set m2m fields for group_record_values as they are not single values for writing
+                            if (
+                                this.fields[segment.field] &&
+                                this.fields[segment.field].type === "many2many"
+                            ) {
+                                return;
                             }
-                            group_record_values[groupKey] =
-                                groupValue === "false"
-                                    ? false
-                                    : Number(groupValue) || groupValue;
-                        }
+                            group_record_values[segment.field] = segment.value;
+                        });
+
                         group = {
                             id: subGroupId,
-                            content: name || "UNASSIGNED",
+                            content: displayName || "UNASSIGNED",
                             group_record_values,
-                            order: name === "UNASSIGNED" ? -1 : seq,
+                            // Ensure unique order
+                            order: displayName === "UNASSIGNED" ? seq++ : seq++,
                             treeLevel: lvl,
-                            visible: name !== "UNASSIGNED",
+                            // Default visibility
+                            visible: displayName !== "UNASSIGNED",
                         };
-                        seq += 1;
                         groups.push(group);
                     }
                     createdGroups.push(group);
-                    if (parent) {
+
+                    if (parent && parent.id) {
                         if (!parent.nestedGroups) {
                             parent.nestedGroups = [];
                         }
@@ -464,50 +529,152 @@ odoo.define("web_timeline.TimelineRenderer", function (require) {
                 return createdGroups;
             };
 
+            /* eslint-disable complexity */
             const processGroup = async (
-                grouped_field,
+                // E.g. "partner_id" or "date_start:month"
+                grouped_field_spec,
+                // E.g. [3, "Azure Interior"] or "January 2024" or 3 (if just id) or [10,11] for m2m
                 groupValue,
-                groupKey,
                 groupLvl,
                 parentGroups
             ) => {
-                if (groupValue && Array.isArray(groupValue)) {
-                    if (this.fieldsGet[grouped_field].type === "many2many") {
-                        const groupModel = this.fieldsGet[grouped_field].relation;
-                        const listValues = await this.get_m2m_grouping_datas(
-                            groupModel,
-                            groupValue
+                const base_grouped_field = grouped_field_spec.includes(":")
+                    ? grouped_field_spec.split(":")[0]
+                    : grouped_field_spec;
+                const fieldInfo = this.fields[base_grouped_field];
+
+                if (fieldInfo.type === "many2many") {
+                    const m2mIds = Array.isArray(groupValue)
+                        ? groupValue
+                        : groupValue
+                        ? [groupValue]
+                        : [];
+                    if (m2mIds.length === 0) {
+                        return createGroup(
+                            {
+                                field: base_grouped_field,
+                                value: false,
+                                spec: grouped_field_spec,
+                            },
+                            "UNASSIGNED",
+                            parentGroups,
+                            groupLvl
                         );
-                        const createdM2mGroups = [];
-                        for (const vals of listValues) {
-                            if (groupValue.includes(vals.id) || vals.id === false) {
-                                const newM2mGroups = createGroup(
-                                    `${groupKey}-${vals.id}`,
-                                    vals.content,
-                                    parentGroups,
-                                    groupLvl
-                                );
-                                createdM2mGroups.push(...newM2mGroups);
-                            }
-                        }
-                        return createdM2mGroups;
                     }
-                    const groupId = `${groupKey}-${groupValue[0]}`;
-                    const groupName = groupValue[1];
-                    return createGroup(groupId, groupName, parentGroups, groupLvl);
+                    const listValues = await getM2MNames(fieldInfo.relation, m2mIds);
+                    const createdM2mGroups = [];
+                    for (const vals of listValues) {
+                        // Vals is {id: ..., content: ...}
+                        if (m2mIds.includes(vals.id)) {
+                            const newM2mGroups = createGroup(
+                                {
+                                    field: base_grouped_field,
+                                    value: vals.id,
+                                    spec: grouped_field_spec,
+                                },
+                                vals.content,
+                                parentGroups,
+                                groupLvl
+                            );
+                            createdM2mGroups.push(...newM2mGroups);
+                        }
+                    }
+                    if (createdM2mGroups.length === 0 && m2mIds.length > 0) {
+                        for (const id of m2mIds) {
+                            const newM2mGroups = createGroup(
+                                {
+                                    field: base_grouped_field,
+                                    value: id,
+                                    spec: grouped_field_spec,
+                                },
+                                `ID: ${id}`,
+                                parentGroups,
+                                groupLvl
+                            );
+                            createdM2mGroups.push(...newM2mGroups);
+                        }
+                    } else if (m2mIds.length === 0) {
+                        return createGroup(
+                            {
+                                field: base_grouped_field,
+                                value: false,
+                                spec: grouped_field_spec,
+                            },
+                            "UNASSIGNED",
+                            parentGroups,
+                            groupLvl
+                        );
+                    }
+                    return createdM2mGroups;
+                    // Handling for date/datetime fields grouped by an operator (e.g., date_start:month)
+                    // Odoo returns the formatted string (e.g., "January 2024") as the groupValue directly.
                 } else if (
-                    groupValue &&
-                    ["string", "number"].includes(typeof groupValue)
+                    grouped_field_spec.includes(":") &&
+                    (fieldInfo.type === "date" || fieldInfo.type === "datetime")
                 ) {
+                    const displayName = groupValue ? String(groupValue) : "UNASSIGNED";
+                    // For date:operator groups, the `value` in the segment should be the formatted string itself,
+                    // as this is what Odoo provides and what we need for display and potential re-grouping.
                     return createGroup(
-                        `${groupKey}-${groupValue}`,
-                        groupValue,
+                        {
+                            field: base_grouped_field,
+                            value: groupValue,
+                            spec: grouped_field_spec,
+                        },
+                        displayName,
+                        parentGroups,
+                        groupLvl
+                    );
+                } else if (Array.isArray(groupValue)) {
+                    // Standard [id, name] for m2o, selection, etc.
+                    const id = groupValue[0];
+                    const name = groupValue[1];
+                    return createGroup(
+                        {
+                            field: base_grouped_field,
+                            value: id,
+                            spec: grouped_field_spec,
+                        },
+                        name,
+                        parentGroups,
+                        groupLvl
+                    );
+                } else if (
+                    groupValue !== undefined &&
+                    groupValue !== null &&
+                    groupValue !== false
+                ) {
+                    // Simple type (string, number, boolean true)
+                    if (fieldInfo.relation && typeof groupValue === "number") {
+                        const names = await getM2MNames(fieldInfo.relation, [
+                            groupValue,
+                        ]);
+                        const displayName =
+                            names.length > 0 ? names[0].content : `ID: ${groupValue}`;
+                        return createGroup(
+                            {
+                                field: base_grouped_field,
+                                value: groupValue,
+                                spec: grouped_field_spec,
+                            },
+                            displayName,
+                            parentGroups,
+                            groupLvl
+                        );
+                    }
+                    return createGroup(
+                        {
+                            field: base_grouped_field,
+                            value: groupValue,
+                            spec: grouped_field_spec,
+                        },
+                        String(groupValue),
                         parentGroups,
                         groupLvl
                     );
                 }
                 return createGroup(
-                    `${groupKey}-false`,
+                    {field: base_grouped_field, value: false, spec: grouped_field_spec},
                     "UNASSIGNED",
                     parentGroups,
                     groupLvl
@@ -515,20 +682,38 @@ odoo.define("web_timeline.TimelineRenderer", function (require) {
             };
 
             for (const evt of events) {
-                let parentGroups = [null];
-                for (const grouped_field of group_bys) {
-                    const groupValue = evt[grouped_field];
-                    const groupKey = grouped_field;
-                    const groupLvl = groupLevel[grouped_field];
-                    parentGroups = await processGroup(
-                        grouped_field,
+                let currentParentGroups = [null];
+                // Iterate using the full specifier, e.g., "date_start:month"
+                for (const grouped_field_spec of group_bys) {
+                    // Use the full specifier to get the value from the event
+                    const groupValue = evt[grouped_field_spec];
+                    const groupLvl = groupLevel[grouped_field_spec];
+                    currentParentGroups = await processGroup(
+                        grouped_field_spec,
                         groupValue,
-                        groupKey,
                         groupLvl,
-                        parentGroups
+                        currentParentGroups
                     );
+                    if (!currentParentGroups || currentParentGroups.length === 0) {
+                        // Safety break if a level yields no groups
+                        break;
+                    }
                 }
             }
+            // Ensure unique group ordering, especially for UNASSIGNED or items with same name
+            groups.sort((a, b) => {
+                if (a.treeLevel !== b.treeLevel) {
+                    return a.treeLevel - b.treeLevel;
+                }
+                if (a.content === "UNASSIGNED" && b.content !== "UNASSIGNED") return 1;
+                if (a.content !== "UNASSIGNED" && b.content === "UNASSIGNED") return -1;
+                if (a.content < b.content) return -1;
+                if (a.content > b.content) return 1;
+                // Fallback to sequence order
+                return a.order - b.order;
+            });
+            // Re-assign order based on sorted list for vis.js if it uses it for display
+            groups.forEach((g, index) => (g.order = index + 1));
             return groups;
         },
 
@@ -545,15 +730,6 @@ odoo.define("web_timeline.TimelineRenderer", function (require) {
                 });
             }
             return groups;
-        },
-
-        get_fields_get: async function (group_bys) {
-            return await this._rpc({
-                model: this.modelName,
-                method: "fields_get",
-                args: [group_bys],
-                context: this.getSession().user_context,
-            });
         },
 
         /**
@@ -605,40 +781,103 @@ odoo.define("web_timeline.TimelineRenderer", function (require) {
          * @private
          * @returns {Object}
          */
+        /* eslint-disable complexity */
         event_data_transform: function (evt) {
             const [date_start, date_stop] = this._get_event_dates(evt);
-            const evtGroup = [];
-            let group = "undefined-false";
-            for (const grouped_field of this.last_group_bys) {
-                evtGroup.push({[grouped_field]: evt[grouped_field]});
+
+            let currentPaths = [[]];
+
+            for (const grouped_field_spec of this.last_group_bys) {
+                // E.g. "user_id", "date_start:month"
+                const fieldValue = evt[grouped_field_spec];
+                const base_grouped_field = grouped_field_spec.includes(":")
+                    ? grouped_field_spec.split(":")[0]
+                    : grouped_field_spec;
+                const fieldInfo = this.fields[base_grouped_field];
+                const fieldSegments = [];
+
+                if (fieldInfo.type === "many2many") {
+                    const m2mIds = Array.isArray(fieldValue)
+                        ? fieldValue.filter((id) => id !== false && id !== null)
+                        : [];
+                    if (m2mIds.length === 0) {
+                        fieldSegments.push({
+                            field: base_grouped_field,
+                            value: false,
+                            spec: grouped_field_spec,
+                        });
+                    } else {
+                        m2mIds.forEach((valId) => {
+                            fieldSegments.push({
+                                field: base_grouped_field,
+                                value: valId,
+                                spec: grouped_field_spec,
+                            });
+                        });
+                    }
+                    // Handle date/datetime fields grouped by an operator (e.g., date_start:month)
+                    // The fieldValue will be the formatted string (e.g., "January 2024")
+                } else if (
+                    grouped_field_spec.includes(":") &&
+                    (fieldInfo.type === "date" || fieldInfo.type === "datetime")
+                ) {
+                    fieldSegments.push({
+                        field: base_grouped_field,
+                        value: fieldValue,
+                        spec: grouped_field_spec,
+                    });
+                } else if (Array.isArray(fieldValue)) {
+                    // [id, name]
+                    fieldSegments.push({
+                        field: base_grouped_field,
+                        value: fieldValue[0],
+                        spec: grouped_field_spec,
+                    });
+                } else if (
+                    fieldValue !== undefined &&
+                    fieldValue !== null &&
+                    fieldValue !== ""
+                ) {
+                    if (fieldValue === false && typeof fieldValue === "boolean") {
+                        fieldSegments.push({
+                            field: base_grouped_field,
+                            value: false,
+                            spec: grouped_field_spec,
+                        });
+                    } else {
+                        fieldSegments.push({
+                            field: base_grouped_field,
+                            value: fieldValue,
+                            spec: grouped_field_spec,
+                        });
+                    }
+                } else {
+                    fieldSegments.push({
+                        field: base_grouped_field,
+                        value: false,
+                        spec: grouped_field_spec,
+                    });
+                }
+                currentPaths = currentPaths.flatMap((path) =>
+                    fieldSegments.map((segment) => [...path, segment])
+                );
             }
 
-            group = evtGroup
-                .reduce((acc, eG) => {
-                    const entries = Object.entries(eG).flatMap(([f, value]) => {
-                        if (value instanceof Array) {
-                            if (this.fieldsGet[f].type === "many2many") {
-                                return value.length === 0
-                                    ? [`${f}-false`]
-                                    : value.map((v) => `${f}-${v}`);
-                            }
-                            return [`${f}-${value[0]}`];
-                        } else if (["string", "number"].includes(typeof value)) {
-                            return [`${f}-${value}`];
-                        }
-                        return [`${f}-false`];
-                    });
-                    if (acc.length === 0) {
-                        return entries.map((e) => [e]);
-                    }
-                    return acc.flatMap((a) => entries.map((e) => [...a, e]));
-                }, [])
-                .map((g) => g.join("/"))
-                .join(",");
+            const groupJSONStrings = currentPaths.map((path) => JSON.stringify(path));
 
             for (const color of this.colors) {
-                if (py.eval(`'${evt[color.field]}' ${color.opt} '${color.value}'`)) {
-                    this.color = color.color;
+                // Ensure evt[color.field] is not an array (e.g. m2o [id, name]) for py.eval
+                let evalValue = evt[color.field];
+                if (Array.isArray(evalValue)) {
+                    // Use ID for evaluation
+                    evalValue = evalValue[0];
+                }
+                try {
+                    if (py.eval(`'${evalValue}' ${color.opt} '${color.value}'`)) {
+                        this.color = color.color;
+                    }
+                } catch (e) {
+                    console.warn("Error evaluating color expression:", e);
                 }
             }
 
@@ -647,33 +886,31 @@ odoo.define("web_timeline.TimelineRenderer", function (require) {
                 content = this.render_timeline_item(evt);
             }
 
-            const groups = group.split(",");
             const r_list = [];
-            for (const g of groups) {
+            for (const jsonPathString of groupJSONStrings) {
                 const r = {
                     start: date_start,
                     content: content,
-                    // Append group to the id to avoid duplicate id, one item can be
-                    // appear/duplicated in multiple groups in case group by m2m field.
-                    id: evt.id + "_" + g,
+                    // Unique ID for vis.js item
+                    id: evt.id + "_" + jsonPathString,
                     record_id: evt.id,
+                    // Keep original Odoo record order if available
                     order: evt.order,
-                    group: g,
+                    // The group this specific vis.js item belongs to
+                    group: jsonPathString,
+                    // Keep original event data
                     evt: evt,
-                    style: `background-color: ${this.color};`,
+                    style: this.color ? `background-color: ${this.color};` : "",
                 };
-                // Only specify range end when there actually is one.
-                // ➔ Instantaneous events / those with inverted dates are displayed as points.
                 if (date_stop && moment(date_start).isBefore(date_stop)) {
                     r.end = date_stop;
                 }
-                this.color = null;
-                if (groups.length === 1) {
-                    return r;
-                }
                 r_list.push(r);
             }
-            return r_list;
+            // Reset color for next event
+            this.color = null;
+
+            return r_list.length === 1 ? r_list[0] : r_list;
         },
 
         /**

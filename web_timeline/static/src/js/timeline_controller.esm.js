@@ -6,6 +6,7 @@ import {Component} from "@odoo/owl";
 import Dialog from "web.Dialog";
 import {FormViewDialog} from "@web/views/view_dialogs/form_view_dialog";
 import core from "web.core";
+import field_utils from "web.field_utils";
 import time from "web.time";
 var _t = core._t;
 
@@ -51,56 +52,111 @@ export default AbstractController.extend({
             adjust_window: true,
         });
         const domains = params.domain || this.renderer.last_domains || [];
-        const contexts = params.context || [];
-        const group_bys = params.groupBy || this.renderer.last_group_bys || [];
-        this.last_domains = domains;
-        this.last_contexts = contexts;
 
-        const cleanGroupBys = (groupBys) => {
-            return groupBys.map((group) => {
-                if (group.includes(":")) {
-                    return group.split(":")[0];
-                }
-                return group;
-            });
-        };
-
-        // Select the group by
-        let n_group_bys = group_bys;
-        let arch_attrs_default_group_by = this.renderer.arch.attrs.default_group_by
+        // Determine the group_by specifiers to use
+        const current_group_bys_specifiers =
+            params.groupBy || this.renderer.last_group_bys || [];
+        const arch_default_specifiers = this.renderer.arch.attrs.default_group_by
             ? this.renderer.arch.attrs.default_group_by.split(",")
             : [];
-        arch_attrs_default_group_by = cleanGroupBys(arch_attrs_default_group_by);
 
-        if (!n_group_bys.length && arch_attrs_default_group_by.length) {
-            n_group_bys = arch_attrs_default_group_by;
-        } else {
-            n_group_bys = cleanGroupBys(n_group_bys);
+        let final_group_bys_specifiers = [];
+        if (current_group_bys_specifiers.length > 0) {
+            final_group_bys_specifiers = current_group_bys_specifiers;
+        } else if (arch_default_specifiers.length > 0) {
+            final_group_bys_specifiers = arch_default_specifiers;
         }
 
-        this.renderer.last_group_bys = n_group_bys;
+        // Store actual specifiers
+        this.renderer.last_group_bys = final_group_bys_specifiers;
         this.renderer.last_domains = domains;
 
-        let fields = this.renderer.fieldNames;
-        fields = _.uniq(fields.concat(n_group_bys));
+        // For the `fields` argument of search_read, we need these specifiers.
+        const group_bys_date_fields = final_group_bys_specifiers.filter(
+            (spec) =>
+                spec.includes(":") &&
+                (spec.includes(":year") ||
+                    spec.includes(":quarter") ||
+                    spec.includes(":month") ||
+                    spec.includes(":week") ||
+                    spec.includes(":day"))
+        );
+        const groups_bys_field_names = final_group_bys_specifiers.map(
+            (spec) => spec.split(":")[0]
+        );
+        const fields_for_search_read = _.uniq([
+            ...this.renderer.fieldNames,
+            ...groups_bys_field_names,
+        ]);
+
+        // For the `order` argument of search_read, Odoo expects base field names.
+        // Use arch_default_specifiers for ordering, cleaned to base names.
+        const arch_default_base_names_for_order = arch_default_specifiers.map((gb) =>
+            gb.includes(":") ? gb.split(":")[0] : gb
+        );
+
         $.when(
             res,
             this._rpc({
                 model: this.model.modelName,
                 method: "search_read",
                 kwargs: {
-                    fields: fields,
+                    // Use specifiers for fields to read
+                    fields: fields_for_search_read,
                     domain: domains,
-                    order: arch_attrs_default_group_by.map((group) => {
+                    order: arch_default_base_names_for_order.map((group) => {
+                        // Order by base names from arch default
                         return {name: group};
                     }),
                 },
                 context: this.getSession().user_context,
-            }).then((data) =>
-                this.renderer.on_data_loaded(data, n_group_bys, defaults.adjust_window)
-            )
+            }).then((data) => {
+                // Transform date fields for grouping
+                for (const d of data) {
+                    for (const date_group of group_bys_date_fields) {
+                        const base_field = date_group.split(":")[0];
+                        const date_value = d[base_field];
+                        if (date_value) {
+                            d[date_group] = this._getGroupedDate(
+                                date_group,
+                                date_value
+                            );
+                        }
+                    }
+                }
+                // Render
+                this.renderer.on_data_loaded(
+                    data,
+                    final_group_bys_specifiers,
+                    defaults.adjust_window
+                );
+            })
         );
         return res;
+    },
+
+    /**
+     * Get the grouped date value for a given date, based on the group type.
+     * @param {String} date_group The date group specifier (e.g., 'date_start:month').
+     * @param {String} date_value The date value to be grouped.
+     * @returns {String|Number} The grouped date value.
+     */
+    _getGroupedDate: function (date_group, date_value) {
+        const user_datetime = field_utils.parse.datetime(date_value);
+        const group_type = date_group.split(":")[1];
+        // Convert datetime to year, quarter, month, week, day with format:
+        //  2024, Q2 2024, June 2024, W24 2024, 13 Jun 2024
+        if (group_type === "year") {
+            return user_datetime.year();
+        } else if (group_type === "quarter") {
+            return "Q" + user_datetime.quarter() + " " + user_datetime.year();
+        } else if (group_type === "month") {
+            return user_datetime.format("MMMM YYYY");
+        } else if (group_type === "week") {
+            return "W" + user_datetime.isoWeek() + " " + user_datetime.year();
+        } else if (group_type === "day") {
+            return user_datetime.format("DD MMM YYYY");
+        }
     },
 
     /**
@@ -112,18 +168,42 @@ export default AbstractController.extend({
      * @returns {jQuery.Deferred}
      */
     _onGroupClick: function (event) {
-        const groups = event.data.item.group.split("/");
-        const [group_key, group_value] = groups[groups.length - 1].split("-");
-        if (!group_value || group_value === "false") return;
-        const group_model = this.renderer.fieldsGet[group_key].relation;
-        if (!group_model) return;
-        return this.do_action({
-            type: "ir.actions.act_window",
-            res_model: group_model,
-            res_id: parseInt(group_value, 10),
-            target: "new",
-            views: [[false, "form"]],
-        });
+        try {
+            const groupPathSegments = JSON.parse(event.data.item.group);
+            if (!Array.isArray(groupPathSegments) || groupPathSegments.length === 0)
+                return;
+
+            const lastSegment = groupPathSegments[groupPathSegments.length - 1];
+            const group_key = lastSegment.field;
+            const group_value = lastSegment.value;
+
+            if (
+                group_value === false ||
+                group_value === null ||
+                group_value === undefined
+            )
+                return;
+
+            const fieldInfo = this.renderer.fields[group_key];
+            if (!fieldInfo || !fieldInfo.relation) return;
+            const group_model = fieldInfo.relation;
+
+            return this.do_action({
+                type: "ir.actions.act_window",
+                res_model: group_model,
+                // Assuming value is the ID
+                res_id: parseInt(group_value, 10),
+                target: "new",
+                views: [[false, "form"]],
+            });
+        } catch (e) {
+            console.error(
+                "Error parsing group JSON for click event:",
+                event.data.item.group,
+                e
+            );
+            return Promise.resolve();
+        }
     },
 
     /**
@@ -221,12 +301,23 @@ export default AbstractController.extend({
             data[this.date_delay] = diff_seconds / 3600;
         }
 
-        const group_record_values = this.renderer.groups.reduce((acc, group) => {
-            if (group.id === item.group) {
-                return group.group_record_values;
+        const group_record_values = {};
+        if (item.group && this.renderer.groups) {
+            const groupInfo = this.renderer.groups.find((g) => g.id === item.group);
+            if (groupInfo && groupInfo.group_record_values) {
+                // Skip date and datetime fields
+                for (const key of Object.keys(groupInfo.group_record_values)) {
+                    if (
+                        fields[key] &&
+                        (fields[key].type === "date" || fields[key].type === "datetime")
+                    ) {
+                        continue;
+                    }
+                    group_record_values[key] = groupInfo.group_record_values[key];
+                }
             }
-            return acc;
-        }, {});
+        }
+
         data = {
             ...data,
             ...group_record_values,
@@ -323,11 +414,31 @@ export default AbstractController.extend({
                 (moment(item.end) - moment(item.start)) / 3600000;
         }
         if (item.group) {
-            const groups = item.group.split("/");
-            for (let i = 0; i < groups.length; i++) {
-                const [group_key, group_value] = groups[i].split("-");
-                default_context["default_".concat(group_key)] =
-                    Number(group_value) || group_value;
+            try {
+                const groupPathSegments = JSON.parse(item.group);
+                if (Array.isArray(groupPathSegments)) {
+                    groupPathSegments.forEach((segment) => {
+                        // Do not set m2m fields as default context as they are not single values
+                        if (
+                            this.renderer.fields[segment.field] &&
+                            this.renderer.fields[segment.field].type === "many2many"
+                        ) {
+                            return;
+                        }
+                        if (
+                            segment.value !== false &&
+                            segment.value !== null &&
+                            segment.value !== undefined
+                        ) {
+                            default_context["default_".concat(segment.field)] =
+                                Number.isInteger(segment.value)
+                                    ? segment.value
+                                    : segment.value;
+                        }
+                    });
+                }
+            } catch (e) {
+                console.error("Error parsing group JSON for add event:", item.group, e);
             }
         }
         // Show popup
