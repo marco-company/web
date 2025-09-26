@@ -236,8 +236,14 @@ odoo.define("web_timeline.TimelineRenderer", function (require) {
             this.canvas = new TimelineCanvas(this);
             this.canvas.appendTo(this.$centerContainer);
             this.timeline.on("changed", () => {
-                this.draw_canvas();
                 this.load_initial_data();
+                // Defer drawing until after DOM settles (e.g., after group collapse/expand)
+                const draw = () => this.draw_canvas();
+                if (typeof window !== "undefined" && window.requestAnimationFrame) {
+                    window.requestAnimationFrame(draw);
+                } else {
+                    setTimeout(draw, 0);
+                }
             });
         },
 
@@ -269,12 +275,17 @@ odoo.define("web_timeline.TimelineRenderer", function (require) {
                 const item = items[key];
                 const data = datas.get(key);
                 if (!data || !data.evt) {
-                    return;
+                    continue; // Skip items without data or event payload
                 }
-                for (const id of data.evt[this.dependency_arrow]) {
+                const deps = data.evt[this.dependency_arrow];
+                if (!Array.isArray(deps) || deps.length === 0) {
+                    continue;
+                }
+                for (const id of deps) {
                     for (const k of keys) {
                         if (k.split("_")[0].toString() === id.toString()) {
-                            this.draw_dependency(item, items[k]);
+                            const toItem = items[k];
+                            this.draw_dependency(item, toItem);
                         }
                     }
                 }
@@ -292,7 +303,23 @@ odoo.define("web_timeline.TimelineRenderer", function (require) {
          * @private
          */
         draw_dependency: function (from, to, options) {
+            // Skip if any item is missing, hidden, or its DOM node is not available/attached
+            if (!from || !to) {
+                return;
+            }
             if (!from.displayed || !to.displayed) {
+                return;
+            }
+            if (!from.dom || !to.dom || !from.dom.box || !to.dom.box) {
+                return;
+            }
+            // In some cases after collapsing a group, items can be logically displayed
+            // but their DOM nodes are detached. Guard against that situation.
+            if (
+                typeof document !== "undefined" &&
+                (!document.body.contains(from.dom.box) ||
+                    !document.body.contains(to.dom.box))
+            ) {
                 return;
             }
             const defaults = _.defaults({}, options, {
