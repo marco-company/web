@@ -85,10 +85,10 @@ async function refreshBanners(ctrl, extraChanges) {
             null
         );
         if ((ctrl.__wfbSeq || 0) !== seq) return;
-        const v = r && r.visible;
-        el.style.display = v ? "" : "none";
-        if (!v) continue;
-        el.className = "o_form_banner alert alert-" + r.severity;
+        // Replace only the alert class
+        el.classList.remove("alert-info", "alert-warning", "alert-danger");
+        el.classList.add("alert-" + r.severity);
+        el.classList.toggle("o_invisible_modifier", !(r && r.visible));
         setHtml(el, r.html);
     }
 }
@@ -106,6 +106,7 @@ function tick(ctrl) {
         if (!rec) return;
         const names = triggerNames(ctrl);
         if (!names.length) return;
+        console.log("Inside");
         const slice = sliceBy(shrink(rec.data), names),
             prev = ctrl.__wfbPrev || {};
         let changed = null;
