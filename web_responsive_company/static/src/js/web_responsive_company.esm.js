@@ -24,6 +24,7 @@ patch(SwitchCompanyMenu.prototype, "web_responsive_company.SwitchCompanyMenu", {
             const input = document.querySelector("#search-input");
             if (input) {
                 input.focus();
+                this._searchCompanies();
             } else if (retries > 0) {
                 setTimeout(() => tryFocus(retries - 1), 100);
             }
