@@ -61,6 +61,11 @@ Authors
 
 * Agile Business Group
 
+Contributors
+~~~~~~~~~~~~
+
+* Thanakrit Pintana
+
 Maintainers
 ~~~~~~~~~~~
 
