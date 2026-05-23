@@ -6,39 +6,41 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Odoo Server 16.0\n"
 "Report-Msgid-Bugs-To: \n"
-"Last-Translator: Automatically generated\n"
+"PO-Revision-Date: 2026-05-23 18:47+0000\n"
+"Last-Translator: Pablo Castelo <pablocv@gmx.es>\n"
 "Language-Team: none\n"
 "Language: gl\n"
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: \n"
 "Plural-Forms: nplurals=2; plural=n != 1;\n"
+"X-Generator: Weblate 5.15.2\n"
 
 #. module: web_widget_image_webcam
 #. odoo-javascript
 #: code:addons/web_widget_image_webcam/static/src/js/webcam_widget.js:0
 #, python-format
 msgid "Close"
-msgstr ""
+msgstr "Pechar"
 
 #. module: web_widget_image_webcam
 #. odoo-javascript
 #: code:addons/web_widget_image_webcam/static/src/js/webcam_widget.js:0
 #, python-format
 msgid "Save & Close"
-msgstr ""
+msgstr "Gardar e pechar"
 
 #. module: web_widget_image_webcam
 #: model:ir.model,name:web_widget_image_webcam.model_ir_config_parameter
 msgid "System Parameter"
-msgstr ""
+msgstr "Parámetro do sistema"
 
 #. module: web_widget_image_webcam
 #. odoo-javascript
 #: code:addons/web_widget_image_webcam/static/src/js/webcam_widget.js:0
 #, python-format
 msgid "Take Snapshot"
-msgstr ""
+msgstr "Tomar instantánea"
 
 #. module: web_widget_image_webcam
 #. odoo-javascript
@@ -46,11 +48,11 @@ msgstr ""
 #: code:addons/web_widget_image_webcam/static/src/xml/web_widget_image_webcam.xml:0
 #, python-format
 msgid "WebCam"
-msgstr ""
+msgstr "WebCam"
 
 #. module: web_widget_image_webcam
 #. odoo-javascript
 #: code:addons/web_widget_image_webcam/static/src/js/webcam_widget.js:0
 #, python-format
 msgid "WebCam Booth"
-msgstr ""
+msgstr "Cabina de WebCam"
